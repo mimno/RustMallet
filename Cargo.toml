@@ -19,6 +19,10 @@ path = "src/bin/analyze.rs"
 name = "train"
 path = "src/bin/train.rs"
 
+[[bin]]
+name = "show"
+path = "src/bin/show.rs"
+
 [dependencies]
 rand = "0.8"
 rand_chacha = "0.3"

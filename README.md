@@ -2,21 +2,72 @@
 
 A Rust implementation of the sparse Gibbs sampling LDA algorithm from [MALLET](https://mallet.cs.umass.edu/), following the SparseLDA scheme of Yao, Mimno and McCallum (KDD 2009).
 
-Three separate command-line tools form a pipeline:
+## Quick Start
 
-```
-preprocess → analyze → preprocess (with stoplist) → train
-```
+**Install:** Download a pre-built binary for your platform from the [Releases](https://github.com/mimno/RustMallet/releases) page and put the binaries somewhere on your PATH. Or [build from source](#building).
 
-## Building
+**Try the included example** (5000 CS/NLP paper abstracts):
 
 ```bash
-cargo build --release
+preprocess --input examples/cs_cl.tsv --format tsv --no-label \
+    --stoplist examples/english-stoplist.txt --min-doc-freq 5 \
+    --output corpus.corp
+
+train --corpus corpus.corp --num-topics 20 --iterations 500
+
+show
 ```
 
-Binaries are written to `target/release/`.
+Sample output:
+```
+Topic  0: bias  language  biases  social  analysis  findings  impact  fairness
+Topic  1: alignment  preference  reward  reinforcement  feedback  policy  human  optimization
+Topic  4: retrieval  context  rag  documents  retrieval-augmented  generation  long  queries
+Topic  5: safety  attacks  adversarial  privacy  robustness  attack  llm  unlearning
+Topic 12: multimodal  visual  image  video  understanding  mllms  multi-modal  textual
+Topic 17: speech  recognition  asr  audio  automatic  neural  word  error
+```
+
+**Your own data:**
+
+```bash
+# Step 1: convert your text to corpus format
+preprocess --input mydocs.txt --output corpus.corp
+
+# Step 2: find stopword candidates and review them
+analyze --corpus corpus.corp > stopwords.txt
+
+# Step 3: reprocess with the stoplist and frequency filtering
+preprocess --input mydocs.txt --output corpus.corp \
+    --stoplist stopwords.txt --min-doc-freq 2
+
+# Step 4: train
+train --corpus corpus.corp --num-topics 20
+
+# Step 5: view results
+show
+```
+
+**Choosing the number of topics:**
+
+| Corpus size | Suggested starting point |
+|-------------|--------------------------|
+| < 500 docs  | 10–20 topics |
+| 500–5000    | 20–50 topics |
+| 5000–50000  | 50–150 topics |
+| > 50000     | 100–300 topics |
+
+Start lower than you think you need. If topics seem too broad or mixed, increase the number. If they look nearly identical, decrease it.
+
+---
 
 ## Tools
+
+Four command-line tools form a pipeline:
+
+```
+preprocess → analyze → preprocess (with stoplist) → train → show
+```
 
 ### `preprocess`
 
@@ -30,7 +81,7 @@ preprocess --input <file> --output <file> [options]
 
 | Flag | Behavior |
 |------|----------|
-| *(default)* | One document per line, whitespace-separated tokens |
+| *(default)* | One document per line, whitespace-tokenized |
 | `--id-field` | First whitespace token on each line is the document name |
 | `--format tsv` | Tab-delimited columns (default: col 0 = id, col 1 = label, col 2 = text) |
 
@@ -55,13 +106,13 @@ The permitted interior characters beyond letters are:
 
 | Character | Code | Rationale |
 |-----------|------|-----------|
-| `-` | U+002D | Hyphen-minus: compound words (well-known, cross-cultural, German, Scandinavian) |
-| `'` | U+0027 | Apostrophe: English contractions (don't), French elision (l'homme), Irish, Welsh |
+| `-` | U+002D | Hyphen-minus: compound words (well-known, fine-tuning, German, Scandinavian) |
+| `'` | U+0027 | Apostrophe: English contractions (don't), French elision (l'homme) |
 | `'` | U+2019 | Typographic/smart apostrophe: same role as U+0027, common in modern text |
 | `.` | U+002E | Period: abbreviations and initials (U.S.A, e.g., Lic.) |
 | `·` | U+00B7 | Middle dot: Catalan geminated-L (col·legi), Welsh, some other scripts |
 
-Em-dash (U+2014), en-dash (U+2013), and all other punctuation break tokens. Matches `don't`, `it's`, `well-known`, `U.S.A`, `col·legi` — but not `word—word` or `123`.
+Em-dash (U+2014), en-dash (U+2013), and all other punctuation break tokens.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -86,18 +137,18 @@ preprocess --input docs.tsv --output corpus.corp --format tsv
 
 # Apply a stoplist and prune rare words
 preprocess --input docs.txt --output corpus.corp \
-    --stoplist stop.txt --min-doc-freq 2
+    --stoplist stopwords.txt --min-doc-freq 2
 
-# Custom tokenizer: letters and digits only
+# Custom tokenizer: letters only, no interior punctuation
 preprocess --input docs.txt --output corpus.corp \
-    --token-regex '\p{L}[\p{L}\p{N}]*'
+    --token-regex '\p{L}\p{L}+'
 ```
 
 ---
 
 ### `analyze`
 
-Reads a binary corpus file and suggests stopwords using several heuristics. The analysis report goes to **stderr**; the suggested word list goes to **stdout** (one word per line). This separation means stdout can be redirected directly to a stoplist file.
+Reads a binary corpus file and suggests stopwords using several heuristics. The analysis report goes to **stderr**; the suggested word list goes to **stdout** (one word per line), so stdout can be redirected directly to a stoplist file.
 
 ```
 analyze --corpus <file> [options]
@@ -123,17 +174,14 @@ Rare words (below `--min-doc-freq`) are reported but not added to the suggested 
 **Examples**
 
 ```bash
-# Print report to terminal, word list to terminal
-analyze --corpus corpus.corp
-
 # Redirect word list to a ready-to-use stoplist file
-analyze --corpus corpus.corp > stop.txt
+analyze --corpus corpus.corp > stopwords.txt
 
-# Tighten the IDF threshold (flag words in >5% of docs instead of >10%)
-analyze --corpus corpus.corp --max-doc-fraction 0.05 > stop.txt
+# Tighten the threshold (flag words in >5% of docs instead of >10%)
+analyze --corpus corpus.corp --max-doc-fraction 0.05 > stopwords.txt
 
 # Write report to a file, word list to another file
-analyze --corpus corpus.corp --output-stoplist stop.txt 2>report.txt
+analyze --corpus corpus.corp --output-stoplist stopwords.txt 2>report.txt
 ```
 
 ---
@@ -167,7 +215,7 @@ Alpha (document-topic prior) and beta (topic-word prior) are optimized automatic
 
 **Output estimation**
 
-Rather than reading distributions from a single final sample, the output files are estimated by averaging over multiple evenly-spaced samples collected after training. This reduces the effect of sampling noise on the estimates.
+Rather than reading distributions from a single final sample, the output files are estimated by averaging over multiple evenly-spaced samples collected after training. This reduces the effect of sampling noise.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -209,19 +257,15 @@ max tokens: 312
 total tokens: 847392
 Hyperparameter optimization every 50 iterations after burn-in (200)
 <10> LL/token: -7.23451
-<20> LL/token: -6.98123
 ...
 [O] alpha_sum=4.21318  beta=0.02341
 0   0.21132  government election vote president congress democracy policy
-1   0.18847  market economy trade finance investment bank
 ...
 <1000> LL/token: -6.12345
 
 Total time: 3 minutes 42 seconds
 
 Collecting 5 samples (25 iterations apart)...
-  sample 1/5
-  ...
   sample 5/5
 ```
 
@@ -244,33 +288,62 @@ train --corpus corpus.corp --num-topics 20 \
 
 ---
 
-## Typical workflow
+### `show`
 
-```bash
-# 1. First pass: preprocess with no filters
-preprocess --input docs.txt --output corpus.corp
+Reads the output files from `train` and displays results in human-readable form. By default reads `topic_word.tsv` from the current directory.
 
-# 2. Analyze to find stopword candidates
-analyze --corpus corpus.corp > stop.txt
-
-# 3. Review and edit stop.txt, then preprocess with filters
-preprocess --input docs.txt --output corpus_clean.corp \
-    --stoplist stop.txt --min-doc-freq 2
-
-# 4. Train
-train --corpus corpus_clean.corp --num-topics 20 --iterations 1000 \
-    --topic-word topic_word.tsv --doc-topic doc_topic.tsv
+```
+show [options]
 ```
 
-For TSV input (e.g., MALLET-style id/label/text):
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--topic-word <file>` | `topic_word.tsv` | Topic-word probability file |
+| `--doc-topic <file>` | `doc_topic.tsv` | Document-topic probability file |
+| `--words <n>` | 10 | Words to show per topic |
+| `--doc-topics <n>` | 0 | Top topics per document (0 = off) |
+| `--threshold <f>` | 0.1 | Minimum probability to show for document topics |
+
+**Examples**
 
 ```bash
-preprocess --input docs.tsv --output corpus.corp --format tsv
-analyze --corpus corpus.corp > stop.txt
-preprocess --input docs.tsv --output corpus_clean.corp \
-    --format tsv --stoplist stop.txt --min-doc-freq 2
-train --corpus corpus_clean.corp --num-topics 20
+# Show top 10 words per topic
+show
+
+# Show more words
+show --words 20
+
+# Show which topics each document is about (top 3, at least 10% probability)
+show --doc-topics 3 --threshold 0.10
 ```
+
+---
+
+## Building
+
+```bash
+cargo build --release
+```
+
+Requires [Rust](https://rustup.rs). Binaries are written to `target/release/`.
+
+---
+
+## Example data
+
+`examples/cs_cl.tsv` contains 5000 computer science and computational linguistics paper abstracts from arXiv (2024). Columns: arXiv ID, date, title+abstract. Use it as a ready-made test corpus:
+
+```bash
+preprocess --input examples/cs_cl.tsv --format tsv --no-label \
+    --stoplist examples/english-stoplist.txt --min-doc-freq 5 \
+    --output corpus.corp
+train --corpus corpus.corp --num-topics 20
+show
+```
+
+`examples/english-stoplist.txt` is a starter English stoplist. Edit it to remove any content words relevant to your corpus before running `preprocess`.
+
+---
 
 ## Corpus file format
 
@@ -294,6 +367,8 @@ for each document:
 ```
 
 All integers are little-endian.
+
+---
 
 ## Algorithm
 
@@ -332,6 +407,8 @@ where *h_w[c]* is the number of (word, topic) pairs with count *c*, and *h_t[s]*
 ### Output estimation
 
 After training, the sampler runs for `num_samples × sample_interval` additional iterations. At each `sample_interval` boundary the smoothed distributions φ_{w,t} and θ_{t,d} are recorded, then averaged across all samples. This reduces the variance of the point estimate relative to reading from a single final state.
+
+---
 
 ## References
 

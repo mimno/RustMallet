@@ -7,7 +7,8 @@ Mallet/
 # Generated corpus and output files
 *.corp
 *.mallet
-*.tsv
+topic_word.tsv
+doc_topic.tsv
 
 # Local test and scratch files
 aha.*
