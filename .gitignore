@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target/
+
+# Java reference source (not part of the Rust project)
+Mallet/
+
+# Generated corpus and output files
+*.corp
+*.mallet
+*.tsv
+
+# Local test and scratch files
+aha.*

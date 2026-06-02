@@ -1,0 +1,25 @@
+[package]
+name = "rust-mallet"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_mallet"
+path = "src/lib.rs"
+
+[[bin]]
+name = "preprocess"
+path = "src/bin/preprocess.rs"
+
+[[bin]]
+name = "analyze"
+path = "src/bin/analyze.rs"
+
+[[bin]]
+name = "train"
+path = "src/bin/train.rs"
+
+[dependencies]
+rand = "0.8"
+rand_chacha = "0.3"
+regex = "1"
