@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, BufRead, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufWriter, Read, Seek, Write};
 use std::path::Path;
 
 use regex::Regex;
@@ -257,6 +257,213 @@ pub fn load_text_file(path: &Path, opts: &LoadOptions) -> io::Result<Corpus> {
         doc_freqs: new_doc_freqs,
         total_freqs: new_total_freqs,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Two-pass streaming preprocessor
+// ---------------------------------------------------------------------------
+
+pub struct CorpusStats {
+    pub num_docs:     usize,
+    pub num_types:    usize,
+    pub total_tokens: usize,
+    pub has_labels:   bool,
+}
+
+/// Parse one non-empty line into (doc_name, label, text_slice).
+/// Returns None for lines that should be skipped (too few TSV columns).
+/// The returned text_slice borrows from `line`.
+fn parse_line<'a>(
+    format:   &InputFormat,
+    line:     &'a str,
+    line_idx: usize,
+) -> Option<(String, String, &'a str)> {
+    match format {
+        InputFormat::Plain { id_field } => {
+            if *id_field {
+                match line.find(|c: char| c.is_whitespace()) {
+                    Some(pos) => Some((line[..pos].to_string(), String::new(), line[pos..].trim())),
+                    None      => Some((format!("doc_{}", line_idx), String::new(), line)),
+                }
+            } else {
+                Some((format!("doc_{}", line_idx), String::new(), line))
+            }
+        }
+        InputFormat::Tsv { id_column, label_column, text_column } => {
+            let cols: Vec<&str> = line.split('\t').collect();
+            let max_needed = [*id_column, *text_column]
+                .iter()
+                .chain(label_column.iter())
+                .copied()
+                .max()
+                .unwrap_or(0);
+            if cols.len() <= max_needed {
+                return None;
+            }
+            let name  = cols[*id_column].trim().to_string();
+            let label = label_column
+                .map(|c| cols[c].trim().to_string())
+                .unwrap_or_default();
+            Some((name, label, cols[*text_column]))
+        }
+    }
+}
+
+/// Two-pass streaming preprocessor: reads the input file twice so that
+/// the full corpus is never held in memory.
+///
+/// Pass 1 – build the vocabulary and document-frequency counts.
+/// Filter – apply min_doc_freq / max_doc_fraction; remap word IDs.
+/// Write  – write the binary header and vocabulary to `output`.
+/// Pass 2 – tokenise each document and write it directly to `output`.
+///
+/// Peak memory: O(vocabulary size), independent of corpus size.
+pub fn preprocess_to_file(
+    input:  &Path,
+    opts:   &LoadOptions,
+    output: &Path,
+) -> io::Result<CorpusStats> {
+    let re = Regex::new(&opts.token_regex)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+
+    // ---- Pass 1: collect vocabulary and per-word frequency counts ----------------
+    let mut vocab:       HashMap<String, usize> = HashMap::new();
+    let mut total_freqs: Vec<u32>               = Vec::new();
+    let mut doc_freqs:   Vec<u32>               = Vec::new();
+    let mut num_docs_p1 = 0usize;
+    let mut has_labels  = false;
+    let mut skipped     = 0usize;
+
+    {
+        let reader = io::BufReader::new(fs::File::open(input)?);
+        for (line_idx, line) in reader.lines().enumerate() {
+            let line = line?;
+            let line = line.trim();
+            if line.is_empty() { continue; }
+
+            let (_, label, text_slice) = match parse_line(&opts.format, line, line_idx) {
+                Some(t) => t,
+                None    => { skipped += 1; continue; }
+            };
+            if !label.is_empty() { has_labels = true; }
+
+            let mut seen: HashSet<usize> = HashSet::new();
+            for m in re.find_iter(text_slice) {
+                let token = m.as_str().to_lowercase();
+                if opts.stopwords.contains(&token) { continue; }
+                let id = if let Some(&eid) = vocab.get(&token) {
+                    eid
+                } else {
+                    let new_id = vocab.len();
+                    vocab.insert(token, new_id);
+                    total_freqs.push(0);
+                    doc_freqs.push(0);
+                    new_id
+                };
+                total_freqs[id] += 1;
+                seen.insert(id);
+            }
+            if !seen.is_empty() {
+                for &id in &seen { doc_freqs[id] += 1; }
+                num_docs_p1 += 1;
+            }
+        }
+    }
+
+    if skipped > 0 {
+        eprintln!("Warning: skipped {} lines with too few columns", skipped);
+    }
+
+    // ---- Filter vocabulary and build word → new_id map -------------------------
+    let num_types_raw = vocab.len();
+    let max_df = (num_docs_p1 as f64 * opts.max_doc_fraction).ceil() as u32;
+
+    // Reconstruct id_to_word in insertion order so the remap is deterministic.
+    let mut id_to_word_raw: Vec<String> = vec![String::new(); num_types_raw];
+    for (word, &id) in &vocab {
+        id_to_word_raw[id] = word.clone();
+    }
+    drop(vocab);
+
+    let mut word_to_new_id: HashMap<String, usize> = HashMap::new();
+    let mut new_id_to_word:  Vec<String> = Vec::new();
+    let mut new_doc_freqs:   Vec<u32>    = Vec::new();
+    let mut new_total_freqs: Vec<u32>    = Vec::new();
+
+    for id in 0..num_types_raw {
+        if doc_freqs[id] >= opts.min_doc_freq && doc_freqs[id] <= max_df {
+            let word   = id_to_word_raw[id].clone();
+            let new_id = new_id_to_word.len();
+            word_to_new_id.insert(word.clone(), new_id);
+            new_id_to_word.push(word);
+            new_doc_freqs.push(doc_freqs[id]);
+            new_total_freqs.push(total_freqs[id]);
+        }
+    }
+    drop(id_to_word_raw);
+    drop(doc_freqs);
+    drop(total_freqs);
+
+    let num_types = new_id_to_word.len();
+
+    // ---- Write header + vocabulary (num_docs placeholder = 0) ------------------
+    let mut writer = io::BufWriter::new(fs::File::create(output)?);
+
+    writer.write_all(MAGIC)?;
+    write_u32(&mut writer, num_types as u32)?;
+    write_u32(&mut writer, 0u32)?; // num_docs: patched after pass 2
+
+    for i in 0..num_types {
+        write_str(&mut writer, &new_id_to_word[i])?;
+        write_u32(&mut writer, new_doc_freqs[i])?;
+        write_u32(&mut writer, new_total_freqs[i])?;
+    }
+
+    // ---- Pass 2: tokenise each document and write it directly ------------------
+    let mut num_docs     = 0usize;
+    let mut total_tokens = 0usize;
+
+    {
+        let reader = io::BufReader::new(fs::File::open(input)?);
+        for (line_idx, line) in reader.lines().enumerate() {
+            let line = line?;
+            let line = line.trim();
+            if line.is_empty() { continue; }
+
+            let (doc_name, doc_label, text_slice) = match parse_line(&opts.format, line, line_idx) {
+                Some(t) => t,
+                None    => continue,
+            };
+
+            let mut tokens: Vec<u32> = Vec::new();
+            for m in re.find_iter(text_slice) {
+                let token = m.as_str().to_lowercase();
+                if opts.stopwords.contains(&token) { continue; }
+                if let Some(&new_id) = word_to_new_id.get(&token) {
+                    tokens.push(new_id as u32);
+                }
+            }
+            if tokens.is_empty() { continue; }
+
+            total_tokens += tokens.len();
+            num_docs     += 1;
+
+            write_str(&mut writer, &doc_name)?;
+            write_str(&mut writer, &doc_label)?;
+            write_u32(&mut writer, tokens.len() as u32)?;
+            for id in tokens {
+                write_u32(&mut writer, id)?;
+            }
+        }
+    }
+
+    // ---- Patch num_docs in the header ------------------------------------------
+    // Offset: 4 (magic) + 4 (num_types) = 8
+    let mut file = writer.into_inner().map_err(|e| e.into_error())?;
+    file.seek(io::SeekFrom::Start(8))?;
+    file.write_all(&(num_docs as u32).to_le_bytes())?;
+
+    Ok(CorpusStats { num_docs, num_types, total_tokens, has_labels })
 }
 
 // ---------------------------------------------------------------------------

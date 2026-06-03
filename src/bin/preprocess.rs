@@ -151,25 +151,24 @@ fn main() {
     }
 
     eprintln!("Reading: {}", input_path);
-    let c = match corpus::load_text_file(Path::new(&input_path), &opts) {
-        Ok(c) => c,
+    eprintln!("Writing: {}", output_path);
+    let stats = match corpus::preprocess_to_file(
+        Path::new(&input_path),
+        &opts,
+        Path::new(&output_path),
+    ) {
+        Ok(s) => s,
         Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
     };
 
     eprintln!(
         "Corpus: {} documents, {} word types, {} tokens{}",
-        c.num_docs(), c.num_types(), c.total_tokens(),
-        if c.has_labels() { ", labels present" } else { "" }
+        stats.num_docs, stats.num_types, stats.total_tokens,
+        if stats.has_labels { ", labels present" } else { "" }
     );
 
-    if c.num_docs() == 0 {
+    if stats.num_docs == 0 {
         eprintln!("Error: no documents after preprocessing");
-        std::process::exit(1);
-    }
-
-    eprintln!("Writing: {}", output_path);
-    if let Err(e) = corpus::save_corpus(&c, Path::new(&output_path)) {
-        eprintln!("Error writing corpus: {}", e);
         std::process::exit(1);
     }
 }
