@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rust-mallet"
+requires-python = ">=3.8"
+version = "0.1.0"
+description = "Fast LDA topic modeling — Python bindings for RustMallet"
+license = { text = "MIT" }
+
+[tool.maturin]
+features = ["python"]
+module-name = "rust_mallet._rust_mallet"
+python-source = "python"
