@@ -10,5 +10,11 @@ Mallet/
 topic_word.tsv
 doc_topic.tsv
 
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+
 # Local test and scratch files
 aha.*
