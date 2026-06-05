@@ -319,6 +319,117 @@ show --doc-topics 3 --threshold 0.10
 
 ---
 
+## Python bindings
+
+The package includes Python bindings built with [PyO3](https://pyo3.rs) and [maturin](https://maturin.rs).
+
+### Installation
+
+```bash
+pip install maturin
+maturin develop --release   # builds and installs into the current virtualenv
+```
+
+Or with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv pip install maturin
+uv run maturin develop --release
+```
+
+### Low-level API
+
+```python
+import rust_mallet
+
+# Load corpus from a text file (one document per line)
+stopwords = rust_mallet.load_stopwords("examples/english-stoplist.txt")
+corpus = rust_mallet.Corpus.from_text_file(
+    "docs.txt",
+    stopwords=stopwords,
+    min_doc_freq=2,
+)
+
+# Or from a MALLET-style TSV (id TAB label TAB text)
+corpus = rust_mallet.Corpus.from_tsv_file(
+    "docs.tsv", id_column=0, label_column=1, text_column=2,
+    stopwords=stopwords,
+)
+
+# Save/load the preprocessed binary corpus
+corpus.save("corpus.corp")
+corpus = rust_mallet.Corpus.load("corpus.corp")
+
+# Train
+model = rust_mallet.train(corpus, num_topics=20, iterations=1000, verbose=True)
+
+# Inspect results
+model.top_words(n=10)       # List[List[str]], one word list per topic
+model.topic_word_matrix()   # List[List[float]], shape [num_topics][num_types]
+model.doc_topic_matrix()    # List[List[float]], shape [num_docs][num_topics]
+model.log_likelihood(corpus)
+```
+
+### sklearn-compatible LDA
+
+`rust_mallet.LDA` follows the scikit-learn estimator interface and works with `Pipeline` and `GridSearchCV`.
+
+```python
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.pipeline import Pipeline
+from rust_mallet import LDA
+
+docs = [...]  # list of raw text strings
+
+pipe = Pipeline([
+    ("vec", CountVectorizer(stop_words="english")),
+    ("lda", LDA(n_components=20, n_iter=500)),
+])
+pipe.fit(docs)
+
+# Access results
+lda = pipe.named_steps["lda"]
+print(lda.components_)        # topic-word probability matrix
+print(lda.doc_topic_prior_)   # optimized alpha values
+```
+
+Directly with a document-term matrix:
+
+```python
+vec = CountVectorizer(stop_words="english")
+X = vec.fit_transform(docs)   # sparse CSR matrix — handled automatically
+
+lda = LDA(n_components=20, n_iter=500, random_state=42)
+theta = lda.fit_transform(X)   # [n_docs, n_topics], uses averaged samples
+theta_new = lda.transform(X_new)  # infer topics for new documents
+```
+
+**Constructor parameters**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `n_components` | 10 | Number of topics |
+| `n_iter` | 1000 | Gibbs sampling iterations |
+| `burn_in` | 200 | Iterations before hyperparameter optimization |
+| `optimize_interval` | 50 | Optimize alpha/beta every N iterations; 0 to disable |
+| `n_samples` | 5 | Samples averaged for final estimates |
+| `sample_interval` | 25 | Iterations between samples |
+| `alpha_sum` | `n_components` | Initial symmetric alpha sum |
+| `beta` | 0.01 | Initial word prior |
+| `random_state` | 42 | Random seed |
+| `n_inference_iter` | 100 | Gibbs iterations per document in `transform()` |
+
+**Attributes after `fit()`**
+
+| Attribute | Description |
+|-----------|-------------|
+| `components_` | Topic-word probability matrix `[n_components, n_features_in_]`; each row sums to ~1.0 |
+| `doc_topic_prior_` | Per-topic alpha values after optimization |
+| `topic_word_prior_` | Beta value after optimization |
+| `n_features_in_` | Vocabulary size seen during training |
+
+---
+
 ## Building
 
 ```bash
