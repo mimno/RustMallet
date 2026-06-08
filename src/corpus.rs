@@ -259,6 +259,112 @@ pub fn load_text_file(path: &Path, opts: &LoadOptions) -> io::Result<Corpus> {
     })
 }
 
+/// Build a Corpus from an in-memory list of `(doc_name, doc_label, text)` triples.
+/// Applies the same tokenisation and frequency-filtering logic as `load_text_file`.
+pub fn load_from_strings(
+    inputs: &[(String, String, String)],
+    opts: &LoadOptions,
+) -> io::Result<Corpus> {
+    let re = Regex::new(&opts.token_regex)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+
+    let mut vocab: HashMap<String, usize> = HashMap::new();
+    let mut id_to_word: Vec<String> = Vec::new();
+    let mut docs: Vec<Vec<u32>> = Vec::new();
+    let mut doc_names: Vec<String> = Vec::new();
+    let mut doc_labels: Vec<String> = Vec::new();
+    let mut total_freqs: Vec<u32> = Vec::new();
+    let mut per_doc_type_sets: Vec<HashSet<usize>> = Vec::new();
+
+    for (doc_name, doc_label, text) in inputs {
+        let mut token_ids: Vec<u32> = Vec::new();
+        let mut seen_in_doc: HashSet<usize> = HashSet::new();
+
+        for m in re.find_iter(text) {
+            let token_lower = m.as_str().to_lowercase();
+            if opts.stopwords.contains(&token_lower) { continue; }
+
+            let id = if let Some(&eid) = vocab.get(&token_lower) {
+                eid
+            } else {
+                let new_id = id_to_word.len();
+                vocab.insert(token_lower.clone(), new_id);
+                id_to_word.push(token_lower);
+                total_freqs.push(0);
+                new_id
+            };
+
+            total_freqs[id] += 1;
+            token_ids.push(id as u32);
+            seen_in_doc.insert(id);
+        }
+
+        if !token_ids.is_empty() {
+            doc_names.push(doc_name.clone());
+            doc_labels.push(doc_label.clone());
+            docs.push(token_ids);
+            per_doc_type_sets.push(seen_in_doc);
+        }
+    }
+
+    let num_types = id_to_word.len();
+    let num_docs  = docs.len();
+
+    let mut doc_freqs = vec![0u32; num_types];
+    for set in &per_doc_type_sets {
+        for &id in set { doc_freqs[id] += 1; }
+    }
+
+    let max_df = (num_docs as f64 * opts.max_doc_fraction).ceil() as u32;
+    let keep: Vec<bool> = (0..num_types)
+        .map(|id| doc_freqs[id] >= opts.min_doc_freq && doc_freqs[id] <= max_df)
+        .collect();
+
+    if keep.iter().all(|&k| k) {
+        return Ok(Corpus { id_to_word, docs, doc_names, doc_labels, doc_freqs, total_freqs });
+    }
+
+    let mut remap: Vec<Option<usize>> = vec![None; num_types];
+    let mut new_id_to_word: Vec<String> = Vec::new();
+    let mut new_doc_freqs: Vec<u32> = Vec::new();
+    let mut new_total_freqs: Vec<u32> = Vec::new();
+
+    for id in 0..num_types {
+        if keep[id] {
+            remap[id] = Some(new_id_to_word.len());
+            new_id_to_word.push(id_to_word[id].clone());
+            new_doc_freqs.push(doc_freqs[id]);
+            new_total_freqs.push(total_freqs[id]);
+        }
+    }
+
+    let new_docs: Vec<Vec<u32>> = docs
+        .into_iter()
+        .map(|doc| doc.into_iter().filter_map(|id| remap[id as usize].map(|r| r as u32)).collect())
+        .collect();
+
+    let mut final_docs: Vec<Vec<u32>> = Vec::new();
+    let mut final_names: Vec<String> = Vec::new();
+    let mut final_labels: Vec<String> = Vec::new();
+
+    for ((doc, name), label) in new_docs.into_iter().zip(doc_names).zip(doc_labels) {
+        if !doc.is_empty() {
+            final_docs.push(doc);
+            final_names.push(name);
+            final_labels.push(label);
+        }
+    }
+
+    Ok(Corpus {
+        id_to_word: new_id_to_word,
+        docs: final_docs,
+        doc_names: final_names,
+        doc_labels: final_labels,
+        doc_freqs: new_doc_freqs,
+        total_freqs: new_total_freqs,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Two-pass streaming preprocessor
 // ---------------------------------------------------------------------------

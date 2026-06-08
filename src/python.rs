@@ -106,6 +106,55 @@ impl Corpus {
     #[getter]
     fn doc_labels(&self) -> Vec<String> { self.inner.doc_labels.clone() }
 
+    /// Build a Corpus directly from a list of text strings (no file I/O).
+    ///
+    /// Args:
+    ///   docs: List of raw document text strings.
+    ///   doc_ids: Optional list of document names; defaults to "doc_0", "doc_1", ...
+    ///   stopwords: Words to exclude during tokenisation.
+    ///   min_doc_freq: Drop words appearing in fewer than N documents.
+    ///   max_doc_fraction: Drop words appearing in more than this fraction of documents.
+    ///   token_regex: Override the default tokenisation regex.
+    #[staticmethod]
+    #[pyo3(signature = (docs, doc_ids=None, stopwords=None, min_doc_freq=1, max_doc_fraction=1.0, token_regex=None))]
+    fn from_strings(
+        docs: Vec<String>,
+        doc_ids: Option<Vec<String>>,
+        stopwords: Option<Vec<String>>,
+        min_doc_freq: u32,
+        max_doc_fraction: f64,
+        token_regex: Option<String>,
+    ) -> PyResult<Self> {
+        let stop: HashSet<String> = stopwords
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+        let opts = corp::LoadOptions {
+            format: corp::InputFormat::Plain { id_field: false },
+            token_regex: token_regex.unwrap_or_else(|| corp::DEFAULT_TOKEN_REGEX.to_string()),
+            stopwords: stop,
+            min_doc_freq,
+            max_doc_fraction,
+        };
+
+        let inputs: Vec<(String, String, String)> = docs
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| {
+                let name = doc_ids.as_ref()
+                    .and_then(|ids| ids.get(i))
+                    .cloned()
+                    .unwrap_or_else(|| format!("doc_{}", i));
+                (name, String::new(), text)
+            })
+            .collect();
+
+        corp::load_from_strings(&inputs, &opts)
+            .map(|inner| Corpus { inner })
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Build a Corpus from a document-term count matrix.
     ///
     /// Args:
@@ -243,9 +292,15 @@ impl TopicModel {
     fn topic_word_matrix(&self) -> Vec<Vec<f64>> {
         let num_topics = self.model.num_topics;
         let num_types = self.model.num_types;
-        (0..num_topics).map(|topic| {
-            (0..num_types).map(|word_id| self.phi[word_id][topic]).collect()
-        }).collect()
+        let mut result = vec![vec![0.0f64; num_types]; num_topics];
+        // word_id in outer loop: each phi[word_id] row is loaded once and
+        // read sequentially, avoiding num_types cache misses per topic.
+        for word_id in 0..num_types {
+            for topic in 0..num_topics {
+                result[topic][word_id] = self.phi[word_id][topic];
+            }
+        }
+        result
     }
 
     /// Full document-topic probability matrix.
