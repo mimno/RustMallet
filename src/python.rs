@@ -411,6 +411,48 @@ impl TopicModel {
         Ok(results)
     }
 
+    /// Infer topic distributions for raw text documents using the model's vocabulary.
+    ///
+    /// Tokenises each document with the same regex used during corpus loading,
+    /// lowercases tokens, counts occurrences of vocabulary words, and runs
+    /// Gibbs inference with the learned topic-word distribution held fixed.
+    /// Tokens not in the training vocabulary are silently ignored.
+    ///
+    /// Args:
+    ///   docs: List of raw text strings.
+    ///   n_iter: Gibbs sampling iterations per document (default 50).
+    ///   seed: Random seed (default 42).
+    ///
+    /// Returns: List[List[float]] of shape [n_docs, num_topics].
+    #[pyo3(signature = (docs, n_iter=50, seed=42))]
+    fn infer_strings(&self, docs: Vec<String>, n_iter: usize, seed: u64) -> PyResult<Vec<Vec<f64>>> {
+        use regex::Regex;
+        use std::collections::HashMap;
+
+        let re = Regex::new(corp::DEFAULT_TOKEN_REGEX)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+
+        let n_vocab = self.vocabulary.len();
+        let vocab_map: HashMap<String, usize> = self.vocabulary
+            .iter()
+            .enumerate()
+            .map(|(i, w)| (w.clone(), i))
+            .collect();
+
+        let x: Vec<Vec<f64>> = docs.iter().map(|doc| {
+            let mut counts = vec![0.0f64; n_vocab];
+            for m in re.find_iter(doc) {
+                let token = m.as_str().to_lowercase();
+                if let Some(&idx) = vocab_map.get(&token) {
+                    counts[idx] += 1.0;
+                }
+            }
+            counts
+        }).collect();
+
+        self.infer(x, n_iter, seed)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "TopicModel(num_topics={}, num_types={}, num_docs={})",
