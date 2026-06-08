@@ -353,6 +353,17 @@ lda.n_features_in_            # vocabulary size
 
 `fit_transform()` is also available and returns `doc_topic_distributions_` directly.
 
+**Inferring topic distributions for new documents**
+
+After `fit()`, call `transform()` with any list of raw text strings. Tokens not seen during training are silently ignored.
+
+```python
+new_docs = ["natural language processing tasks ...", "deep reinforcement learning ..."]
+theta = lda.transform(new_docs)  # ndarray [n_new_docs, n_topics]
+```
+
+The number of Gibbs iterations used for inference is controlled by `n_inference_iter` (default 50).
+
 **Constructor parameters**
 
 | Parameter | Default | Description |
@@ -366,6 +377,7 @@ lda.n_features_in_            # vocabulary size
 | `doc_topic_prior` | `n_components` | Initial symmetric alpha sum |
 | `topic_word_prior` | 0.01 | Initial beta per word |
 | `random_state` | 42 | Random seed |
+| `n_inference_iter` | 50 | Gibbs iterations per document during `transform()` |
 | `stopwords` | None | List of words to exclude, or path to a stoplist file |
 | `min_doc_freq` | 1 | Drop words appearing in fewer than N documents |
 | `max_doc_fraction` | 1.0 | Drop words appearing in more than this fraction of documents |
@@ -405,6 +417,12 @@ model.top_words(n=10)       # List[List[str]], one word list per topic
 model.topic_word_matrix()   # List[List[float]], shape [num_topics][num_types]
 model.doc_topic_matrix()    # List[List[float]], shape [num_docs][num_topics]
 model.log_likelihood(corpus)
+
+# Infer topic distributions for new raw-text documents (fixed-phi Gibbs)
+theta = model.infer_strings(new_docs, n_iter=50)  # List[List[float]], shape [n_docs][num_topics]
+
+# Or infer from a pre-built count matrix (columns indexed by training vocabulary)
+theta = model.infer(count_matrix, n_iter=50)      # List[List[float]]
 ```
 
 ---
