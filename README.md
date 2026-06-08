@@ -321,47 +321,84 @@ show --doc-topics 3 --threshold 0.10
 
 ## Python bindings
 
-The package includes Python bindings built with [PyO3](https://pyo3.rs) and [maturin](https://maturin.rs).
+The package includes Python bindings built with [PyO3](https://pyo3.rs) and [maturin](https://maturin.rs). There are two layers: a sklearn-compatible `LatentDirichletAllocation` class and a lower-level `_rust_mallet` extension module.
 
-### Installation
+### Building
 
-```bash
-pip install maturin
-maturin develop --release   # builds and installs into the current virtualenv
-```
-
-Or with [uv](https://docs.astral.sh/uv/):
+Requires [uv](https://docs.astral.sh/uv/) and a Rust toolchain. From the repo root:
 
 ```bash
-uv pip install maturin
-uv run maturin develop --release
+PATH="$HOME/.cargo/bin:$PATH" uv run --with maturin maturin develop
 ```
+
+This compiles the native extension (`pyrmallet/_rust_mallet.abi3.so`) and installs the package into uv's virtual environment. The build always uses release optimizations (`profile = "release"` is set in `pyproject.toml`).
+
+### sklearn-compatible API
+
+`LatentDirichletAllocation` follows the scikit-learn estimator interface. It takes a list of raw text strings — tokenization and vocabulary building happen inside Rust.
+
+```python
+from pyrmallet import LatentDirichletAllocation
+
+docs = ["the quick brown fox ...", "machine learning models ...", ...]
+
+lda = LatentDirichletAllocation(n_components=20, max_iter=1000)
+lda.fit(docs)
+
+lda.components_               # ndarray [n_topics, n_vocab], rows sum to ~1
+lda.doc_topic_distributions_  # ndarray [n_docs, n_topics]
+lda.feature_names_in_         # vocabulary array
+lda.n_features_in_            # vocabulary size
+```
+
+`fit_transform()` is also available and returns `doc_topic_distributions_` directly.
+
+**Constructor parameters**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `n_components` | 10 | Number of topics |
+| `max_iter` | 1000 | Gibbs sampling iterations |
+| `burn_in` | 200 | Iterations before hyperparameter optimization |
+| `optimize_interval` | 50 | Optimize alpha/beta every N iterations; 0 to disable |
+| `num_samples` | 5 | Samples averaged for final estimates |
+| `sample_interval` | 25 | Iterations between samples |
+| `doc_topic_prior` | `n_components` | Initial symmetric alpha sum |
+| `topic_word_prior` | 0.01 | Initial beta per word |
+| `random_state` | 42 | Random seed |
+| `stopwords` | None | List of words to exclude, or path to a stoplist file |
+| `min_doc_freq` | 1 | Drop words appearing in fewer than N documents |
+| `max_doc_fraction` | 1.0 | Drop words appearing in more than this fraction of documents |
+| `verbose` | False | Print log-likelihood progress during training |
 
 ### Low-level API
 
-```python
-import rust_mallet
+`pyrmallet._rust_mallet` exposes `Corpus` and `TopicModel` objects directly.
 
-# Load corpus from a text file (one document per line)
-stopwords = rust_mallet.load_stopwords("examples/english-stoplist.txt")
-corpus = rust_mallet.Corpus.from_text_file(
-    "docs.txt",
+```python
+from pyrmallet import _rust_mallet as rm
+
+# Build a corpus directly from strings (no file I/O)
+stopwords = rm.load_stopwords("examples/english-stoplist.txt")
+corpus = rm.Corpus.from_strings(
+    docs,
     stopwords=stopwords,
     min_doc_freq=2,
 )
 
-# Or from a MALLET-style TSV (id TAB label TAB text)
-corpus = rust_mallet.Corpus.from_tsv_file(
-    "docs.tsv", id_column=0, label_column=1, text_column=2,
+# Or load from a file
+corpus = rm.Corpus.from_text_file("docs.txt", stopwords=stopwords)
+corpus = rm.Corpus.from_tsv_file(
+    "docs.tsv", id_column=0, text_column=1,
     stopwords=stopwords,
 )
 
-# Save/load the preprocessed binary corpus
+# Save/load a preprocessed corpus
 corpus.save("corpus.corp")
-corpus = rust_mallet.Corpus.load("corpus.corp")
+corpus = rm.Corpus.load("corpus.corp")
 
 # Train
-model = rust_mallet.train(corpus, num_topics=20, iterations=1000, verbose=True)
+model = rm.train(corpus, num_topics=20, iterations=1000, verbose=True)
 
 # Inspect results
 model.top_words(n=10)       # List[List[str]], one word list per topic
@@ -370,73 +407,25 @@ model.doc_topic_matrix()    # List[List[float]], shape [num_docs][num_topics]
 model.log_likelihood(corpus)
 ```
 
-### sklearn-compatible LDA
-
-`rust_mallet.LDA` follows the scikit-learn estimator interface and works with `Pipeline` and `GridSearchCV`.
-
-```python
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.pipeline import Pipeline
-from rust_mallet import LDA
-
-docs = [...]  # list of raw text strings
-
-pipe = Pipeline([
-    ("vec", CountVectorizer(stop_words="english")),
-    ("lda", LDA(n_components=20, n_iter=500)),
-])
-pipe.fit(docs)
-
-# Access results
-lda = pipe.named_steps["lda"]
-print(lda.components_)        # topic-word probability matrix
-print(lda.doc_topic_prior_)   # optimized alpha values
-```
-
-Directly with a document-term matrix:
-
-```python
-vec = CountVectorizer(stop_words="english")
-X = vec.fit_transform(docs)   # sparse CSR matrix — handled automatically
-
-lda = LDA(n_components=20, n_iter=500, random_state=42)
-theta = lda.fit_transform(X)   # [n_docs, n_topics], uses averaged samples
-theta_new = lda.transform(X_new)  # infer topics for new documents
-```
-
-**Constructor parameters**
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `n_components` | 10 | Number of topics |
-| `n_iter` | 1000 | Gibbs sampling iterations |
-| `burn_in` | 200 | Iterations before hyperparameter optimization |
-| `optimize_interval` | 50 | Optimize alpha/beta every N iterations; 0 to disable |
-| `n_samples` | 5 | Samples averaged for final estimates |
-| `sample_interval` | 25 | Iterations between samples |
-| `alpha_sum` | `n_components` | Initial symmetric alpha sum |
-| `beta` | 0.01 | Initial word prior |
-| `random_state` | 42 | Random seed |
-| `n_inference_iter` | 100 | Gibbs iterations per document in `transform()` |
-
-**Attributes after `fit()`**
-
-| Attribute | Description |
-|-----------|-------------|
-| `components_` | Topic-word probability matrix `[n_components, n_features_in_]`; each row sums to ~1.0 |
-| `doc_topic_prior_` | Per-topic alpha values after optimization |
-| `topic_word_prior_` | Beta value after optimization |
-| `n_features_in_` | Vocabulary size seen during training |
-
 ---
 
 ## Building
+
+**CLI tools**
 
 ```bash
 cargo build --release
 ```
 
 Requires [Rust](https://rustup.rs). Binaries are written to `target/release/`.
+
+**Python bindings**
+
+```bash
+PATH="$HOME/.cargo/bin:$PATH" uv run --with maturin maturin develop
+```
+
+Requires [uv](https://docs.astral.sh/uv/) and a Rust toolchain. See [Python bindings](#python-bindings) for details.
 
 ---
 
