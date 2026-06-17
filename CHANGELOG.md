@@ -3,8 +3,10 @@
 ## 0.1.1
 
 ### Added
-- `pyrmallet` published on PyPI (https://pypi.org/project/pyrmallet/), built and
-  published via GitHub Actions using `maturin` and PyPI trusted publishing.
+- `pyrmallet` 0.1.1 is published on PyPI: https://pypi.org/project/pyrmallet/
+  Install with `pip install pyrmallet`. Wheels (Linux x86-64/aarch64, macOS
+  Intel/Apple Silicon, Windows x86-64) and an sdist are built and published via
+  GitHub Actions using `maturin` and PyPI trusted publishing.
 - **Post-training inference** (`transform()` on new documents). After `fit()`,
   `LatentDirichletAllocation.transform()` accepts a new list of raw text strings
   and returns topic distributions inferred with fixed topic-word probabilities
