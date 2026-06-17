@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.1
 
 ### Added
+- `pyrmallet` published on PyPI (https://pypi.org/project/pyrmallet/), built and
+  published via GitHub Actions using `maturin` and PyPI trusted publishing.
 - **Post-training inference** (`transform()` on new documents). After `fit()`,
   `LatentDirichletAllocation.transform()` accepts a new list of raw text strings
   and returns topic distributions inferred with fixed topic-word probabilities
